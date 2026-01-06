@@ -1,0 +1,6 @@
+flask
+requests
+openai
+websockets
+python-dotenv
+gunicorn
