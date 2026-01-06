@@ -47,7 +47,7 @@ def main() -> None:
     parser.add_argument(
         "--twiml-url",
         default=os.getenv("TWILIO_CALL_TWIML_URL"),
-        help="URL pública que retorna TwiML (ex.: ngrok /twilio/voice). "
+        help="URL pública que retorna TwiML (ex.: https://twilio-production-9007.up.railway.app/twilio/voice). "
         "Se informado, substitui o uso do --message.",
     )
     parser.add_argument(
