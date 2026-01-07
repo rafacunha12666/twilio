@@ -67,12 +67,7 @@ def normalize_e164(value: str | None) -> str | None:
 
 
 def pick_caller_id(req_form: dict) -> str | None:
-    """Prefer inbound caller (converted to E.164), fallback to configured caller ID, then To/Called."""
-    inbound_from = req_form.get("From") or req_form.get("Caller")
-    normalized_inbound = normalize_e164(inbound_from)
-    if normalized_inbound:
-        return normalized_inbound
-
+    """Prefer configured caller ID; fallback to the inbound "To" number."""
     caller_id = normalize_e164(SIP_CALLER_ID)
     if caller_id:
         return caller_id
@@ -204,7 +199,10 @@ def twilio_voice():
     base = f"{proto}://{host}"
     status_url = f"{base}/twilio/dial-status"
     action_url = f"{base}/twilio/dial-action"
-    caller_id = None  # No callerId to mimic original working behavior.
+    caller_id = pick_caller_id(request.form)
+    if SIP_CALLER_ID and not normalize_e164(SIP_CALLER_ID):
+        print(f"invalid SIP_CALLER_ID: {SIP_CALLER_ID}")
+    print(f"using callerId: {caller_id}")
     twiml = (
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
         "<Response>"
@@ -232,7 +230,7 @@ def twilio_dial_status():
 def twilio_dial_action():
     payload = {k: v for k, v in request.form.items()}
     print(f"twilio dial action: {payload}")
-    return Response("<Response/>", mimetype="text/xml")
+    return ("", 200)
 
 
 if __name__ == "__main__":
