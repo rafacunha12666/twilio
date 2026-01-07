@@ -24,6 +24,12 @@ OPENAI_PROMPT_PATH = os.getenv(
     "OPENAI_PROMPT_PATH",
     str(Path(__file__).with_name("prompt-paty.txt")),
 )
+SIP_CALLER_ID = (
+    os.getenv("TWILIO_SIP_CALLER_ID")
+    or os.getenv("WHATSAPP_CALL_FROM")
+    or os.getenv("PHONE")
+)
+
 OPENAI_GREETING = os.getenv("OPENAI_REALTIME_GREETING", "Diga extamente o seguinte: 'Olá , tudo bem? Eu sou a Paty, consultora da Lemos Leite Advocacia.Qual é o seu nome?'")
 OPENAI_INSTRUCTIONS = os.getenv(
     "OPENAI_REALTIME_INSTRUCTIONS",
@@ -44,6 +50,17 @@ def build_sip_uri() -> str:
     if region:
         return f"sip:{OPENAI_PROJECT_ID}@sip.api.openai.com;transport=tls;region={region}"
     return f"sip:{OPENAI_PROJECT_ID}@sip.api.openai.com;transport=tls"
+
+def normalize_e164(value: str | None) -> str | None:
+    if not value:
+        return None
+    digits = "".join(ch for ch in value if ch.isdigit())
+    if not digits:
+        return None
+    normalized = f"+{digits}"
+    if len(digits) < 8:
+        return None
+    return normalized
 
 
 def load_instructions() -> str:
@@ -166,13 +183,18 @@ def twilio_voice():
     base = f"{proto}://{host}"
     status_url = f"{base}/twilio/dial-status"
     action_url = f"{base}/twilio/dial-action"
+    caller_id = normalize_e164(SIP_CALLER_ID)
+    if SIP_CALLER_ID and not caller_id:
+        print(f"invalid SIP_CALLER_ID: {SIP_CALLER_ID}")
     twiml = (
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
         "<Response>"
         f"<Dial action=\"{action_url}\" method=\"POST\" "
         f"statusCallback=\"{status_url}\" "
         "statusCallbackEvent=\"initiated ringing answered completed\" "
-        "statusCallbackMethod=\"POST\">"
+        "statusCallbackMethod=\"POST\""
+        + (f" callerId=\"{caller_id}\"" if caller_id else "")
+        + ">"
         f"<Sip>{sip_uri}</Sip>"
         "</Dial>"
         "</Response>"
