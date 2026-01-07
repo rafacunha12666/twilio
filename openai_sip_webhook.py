@@ -204,10 +204,7 @@ def twilio_voice():
     base = f"{proto}://{host}"
     status_url = f"{base}/twilio/dial-status"
     action_url = f"{base}/twilio/dial-action"
-    caller_id = pick_caller_id(request.form)
-    if SIP_CALLER_ID and not normalize_e164(SIP_CALLER_ID):
-        print(f"invalid SIP_CALLER_ID: {SIP_CALLER_ID}")
-    print(f"using callerId: {caller_id}")
+    caller_id = None  # No callerId to mimic original working behavior.
     twiml = (
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
         "<Response>"
