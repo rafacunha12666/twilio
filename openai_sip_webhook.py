@@ -54,6 +54,9 @@ def build_sip_uri() -> str:
 def normalize_e164(value: str | None) -> str | None:
     if not value:
         return None
+    value = value.strip()
+    if value.lower().startswith("whatsapp:"):
+        value = value.split(":", 1)[1]
     digits = "".join(ch for ch in value if ch.isdigit())
     if not digits:
         return None
@@ -61,6 +64,19 @@ def normalize_e164(value: str | None) -> str | None:
     if len(digits) < 8:
         return None
     return normalized
+
+
+def pick_caller_id(req_form: dict) -> str | None:
+    """Prefer configured caller ID; fallback to the inbound "To" number."""
+    caller_id = normalize_e164(SIP_CALLER_ID)
+    if caller_id:
+        return caller_id
+
+    for key in ("To", "Called"):
+        candidate = normalize_e164(req_form.get(key))
+        if candidate:
+            return candidate
+    return None
 
 
 def load_instructions() -> str:
@@ -183,9 +199,10 @@ def twilio_voice():
     base = f"{proto}://{host}"
     status_url = f"{base}/twilio/dial-status"
     action_url = f"{base}/twilio/dial-action"
-    caller_id = normalize_e164(SIP_CALLER_ID)
-    if SIP_CALLER_ID and not caller_id:
+    caller_id = pick_caller_id(request.form)
+    if SIP_CALLER_ID and not normalize_e164(SIP_CALLER_ID):
         print(f"invalid SIP_CALLER_ID: {SIP_CALLER_ID}")
+    print(f"using callerId: {caller_id}")
     twiml = (
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
         "<Response>"
