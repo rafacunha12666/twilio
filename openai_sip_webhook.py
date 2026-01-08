@@ -93,6 +93,7 @@ def debug_signature_validation(raw_body: bytes, headers: dict, secrets: list, de
     """Debug webhook signature validation by logging hash, preview, and manual verification."""
     import hashlib
     import hmac
+    import base64
     
     # Calculate SHA256 hash of body
     body_hash = hashlib.sha256(raw_body).hexdigest()
@@ -126,11 +127,14 @@ def debug_signature_validation(raw_body: bytes, headers: dict, secrets: list, de
         try:
             # OpenAI webhook signature format: webhook-id.webhook-timestamp.body
             signed_payload = f"{webhook_id}.{webhook_timestamp}.{raw_body.decode('utf-8')}"
-            expected_sig = hmac.new(
-                secret.encode('utf-8'),
-                signed_payload.encode('utf-8'),
-                hashlib.sha256
-            ).hexdigest()
+            # CRITICAL: OpenAI uses base64, not hexdigest!
+            expected_sig = base64.b64encode(
+                hmac.new(
+                    secret.encode('utf-8'),
+                    signed_payload.encode('utf-8'),
+                    hashlib.sha256
+                ).digest()
+            ).decode()
             expected_full = f"v1,{expected_sig}"
             
             # Mask secret for logging
