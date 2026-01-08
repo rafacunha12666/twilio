@@ -43,6 +43,7 @@ if not OPENAI_WEBHOOK_SECRET:
 
 app = Flask(__name__)
 AUTH_HEADER = {"Authorization": f"Bearer {OPENAI_API_KEY}"}
+_LOGGED_WEBHOOK_SECRET_HINTS = False
 
 
 def build_sip_uri() -> str:
@@ -112,6 +113,17 @@ def unwrap_event(raw_body: bytes, headers: dict) -> dict:
     secrets = [_strip_quotes(s) for s in raw.split(",") if _strip_quotes(s)]
     if not secrets:
         raise SystemExit("Missing OPENAI_WEBHOOK_SECRET in environment.")
+
+    def _mask_secret(secret: str) -> str:
+        if len(secret) <= 12:
+            return secret[:4] + "…"
+        return f"{secret[:10]}…{secret[-6:]}"
+
+    global _LOGGED_WEBHOOK_SECRET_HINTS
+    if not _LOGGED_WEBHOOK_SECRET_HINTS:
+        masked = ", ".join(_mask_secret(s) for s in secrets)
+        print(f"openai webhook secrets loaded ({len(secrets)}): {masked}")
+        _LOGGED_WEBHOOK_SECRET_HINTS = True
 
     last_err: Exception | None = None
     for secret in secrets:
@@ -189,6 +201,21 @@ def handle_webhook():
         event = unwrap_event(raw_body, request.headers)
     except Exception as exc:
         print(f"signature validation failed: {exc}")
+        try:
+            sig = request.headers.get("webhook-signature", "")
+            sig_preview = sig[:48] + ("…" if len(sig) > 48 else "")
+            print(
+                "webhook headers:"
+                f" id={request.headers.get('webhook-id')}"
+                f" ts={request.headers.get('webhook-timestamp')}"
+                f" sig={sig_preview}"
+                f" ua={request.headers.get('User-Agent')}"
+                f" encoding={request.headers.get('Content-Encoding')}"
+                f" content_type={request.headers.get('Content-Type')}"
+                f" body_len={len(raw_body)}"
+            )
+        except Exception:
+            pass
         traceback.print_exc()
         # Return 200 to avoid retries storm; log and inspect.
         return ("", 200)
