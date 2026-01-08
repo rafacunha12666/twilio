@@ -330,11 +330,12 @@ async def send_greeting(call_id: str) -> None:
     try:
         import websockets
     except ImportError:
-        print("websockets not installed; greeting skipped.")
+        print(f"[greeting] websockets not installed; greeting skipped (call_id={call_id})")
         return
 
     greeting_instructions = build_greeting_instructions(OPENAI_GREETING)
     if not greeting_instructions:
+        print(f"[greeting] no greeting text configured; skipping (call_id={call_id})")
         return
 
     response_create = {
@@ -346,17 +347,21 @@ async def send_greeting(call_id: str) -> None:
     }
 
     ws_url = f"wss://api.openai.com/v1/realtime?call_id={call_id}"
+    print(f"[greeting] connecting websocket for call_id={call_id}")
     try:
         async with websockets.connect(ws_url, extra_headers=AUTH_HEADER) as websocket:
             await websocket.send(json.dumps(response_create, ensure_ascii=False))
+            print(f"[greeting] sent response.create (call_id={call_id})")
     except TypeError:
         async with websockets.connect(ws_url, additional_headers=AUTH_HEADER) as websocket:
             await websocket.send(json.dumps(response_create, ensure_ascii=False))
+            print(f"[greeting] sent response.create (call_id={call_id})")
     except Exception as exc:
-        print(f"websocket error: {exc}")
+        print(f"[greeting] websocket error (call_id={call_id}): {exc}")
 
 
 def start_greeting_thread(call_id: str) -> None:
+    print(f"[greeting] starting greeting thread (call_id={call_id})")
     threading.Thread(
         target=lambda: asyncio.run(send_greeting(call_id)),
         daemon=True,
@@ -442,6 +447,7 @@ def handle_webhook():
             else:
                 print(f"accept ok {resp.status_code}")
                 if OPENAI_GREETING and should_send_greeting(call_id):
+                    print(f"[greeting] scheduling greeting after accept (call_id={call_id})")
                     start_greeting_thread(call_id)
                 elif OPENAI_GREETING:
                     print(f"greeting already sent for call_id: {call_id}")
