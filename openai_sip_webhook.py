@@ -101,6 +101,7 @@ def debug_signature_validation(raw_body: bytes, headers: dict, secrets: list, de
     print(f"\n=== WEBHOOK DEBUG ===")
     print(f"Body SHA256: {body_hash}")
     print(f"Body length: {len(raw_body)} bytes")
+    print(f"Body HEX (first 64 bytes): {raw_body[:64].hex()}")
     
     # Log body preview (first 200 chars)
     try:
@@ -309,7 +310,9 @@ def handle_webhook():
         print(f"[{timestamp}] WEBHOOK VALIDATION FAILED (req: {request_id})")
         print(f"Error: {exc}")
         print(f"Body SHA256: {body_hash}")
-        print(f"Body length: {len(raw_body)} bytes")
+        
+        # Check if we should skip validation (EMERGENCY MODE)
+        skip_validation = os.getenv("SKIP_WEBHOOK_VALIDATION", "false").lower() == "true"
         
         try:
             sig = request.headers.get("webhook-signature", "")
@@ -319,14 +322,10 @@ def handle_webhook():
                 f" id={request.headers.get('webhook-id')}"
                 f" ts={request.headers.get('webhook-timestamp')}"
                 f" sig={sig_preview}"
-                f" ua={request.headers.get('User-Agent')}"
-                f" encoding={request.headers.get('Content-Encoding')}"
-                f" content_type={request.headers.get('Content-Type')}"
             )
         except Exception:
             pass
         
-        # Save body to temp file for offline analysis if debug enabled
         debug_webhook = os.getenv("DEBUG_WEBHOOK", "false").lower() == "true"
         if debug_webhook:
             try:
@@ -338,9 +337,18 @@ def handle_webhook():
                 print(f"Could not save body: {save_err}")
         
         print(f"{'='*60}\n")
-        traceback.print_exc()
-        # Return 200 to avoid retries storm; log and inspect.
-        return ("", 200)
+        
+        if skip_validation:
+            print("!!! WARNING: SKIP_WEBHOOK_VALIDATION is enabled. Proceeding despite validation failure. !!!")
+            try:
+                event = json.loads(raw_body)
+            except Exception as json_err:
+                 print(f"CRITICAL: Failed to parse raw JSON body: {json_err}")
+                 return ("", 400)
+        else:
+            traceback.print_exc()
+            # Return 200 to avoid retries storm; log and inspect.
+            return ("", 200)
 
     event_type = getattr(event, "type", None)
     if event_type is None and isinstance(event, dict):
