@@ -411,18 +411,18 @@ async def send_greeting(call_id: str) -> None:
     for attempt in range(1, 3):
         try:
             async with websockets.connect(ws_url, extra_headers=AUTH_HEADER) as websocket:
-                await _recv_event(websocket, "session", timeout=1.5)
+                await _recv_event(websocket, "session", timeout=0.5)
                 await asyncio.sleep(0.35 * attempt)
                 await websocket.send(json.dumps(response_create, ensure_ascii=False))
                 print(
                     f"[greeting] sent response.create (call_id={call_id}, attempt={attempt})",
                     flush=True,
                 )
-                await _recv_event(websocket, "response", timeout=1.5)
+                await _recv_event(websocket, "response", timeout=0.5)
                 return
         except TypeError:
             async with websockets.connect(ws_url, additional_headers=AUTH_HEADER) as websocket:
-                await _recv_event(websocket, "session", timeout=1.5)
+                await _recv_event(websocket, "session", timeout=0.5)
                 await asyncio.sleep(0.35 * attempt)
                 await websocket.send(json.dumps(response_create, ensure_ascii=False))
                 print(
