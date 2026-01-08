@@ -89,11 +89,31 @@ def load_instructions() -> str:
 
 
 def unwrap_event(raw_body: bytes, headers: dict) -> dict:
-    """Validate OpenAI webhook signature using the official helper."""
+    """
+    Validate OpenAI webhook signature using the official helper.
+    Supports comma-separated secrets in env (e.g., "whsec_a,whsec_b") to allow
+    rolling secrets between local/remoto without downtime.
+    """
     from openai import OpenAI
 
-    client = OpenAI(api_key=OPENAI_API_KEY, webhook_secret=OPENAI_WEBHOOK_SECRET)
-    return client.webhooks.unwrap(raw_body, headers)
+    # Accept multiple secrets separated by comma/space.
+    raw = os.getenv("OPENAI_WEBHOOK_SECRET", "")
+    secrets = [s.strip() for s in raw.replace(" ", "").split(",") if s.strip()]
+    if not secrets:
+        raise SystemExit("Missing OPENAI_WEBHOOK_SECRET in environment.")
+
+    last_err: Exception | None = None
+    for secret in secrets:
+        try:
+            client = OpenAI(api_key=OPENAI_API_KEY, webhook_secret=secret)
+            return client.webhooks.unwrap(raw_body, headers)
+        except Exception as exc:  # keep trying others
+            last_err = exc
+            continue
+    # If none validated, re-raise last error for logging.
+    if last_err:
+        raise last_err
+    raise RuntimeError("No valid webhook secret found.")
 
 
 def accept_call(call_id: str) -> requests.Response | None:
