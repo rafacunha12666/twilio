@@ -96,9 +96,20 @@ def unwrap_event(raw_body: bytes, headers: dict) -> dict:
     """
     from openai import OpenAI
 
-    # Accept multiple secrets separated by comma/space.
+    def _strip_quotes(value: str) -> str:
+        value = value.strip()
+        if len(value) >= 2 and (
+            (value.startswith("\"") and value.endswith("\""))
+            or (value.startswith("'") and value.endswith("'"))
+        ):
+            return value[1:-1].strip()
+        return value
+
     raw = os.getenv("OPENAI_WEBHOOK_SECRET", "")
-    secrets = [s.strip() for s in raw.replace(" ", "").split(",") if s.strip()]
+    # Support multiple secrets separated by comma/newline. Also tolerate secrets being
+    # pasted with surrounding quotes in env providers.
+    raw = raw.replace("\r\n", "\n").replace("\n", ",")
+    secrets = [_strip_quotes(s) for s in raw.split(",") if _strip_quotes(s)]
     if not secrets:
         raise SystemExit("Missing OPENAI_WEBHOOK_SECRET in environment.")
 
