@@ -1,6 +1,6 @@
 flask
 requests
-openai
+openai==1.107.2
 websockets
 python-dotenv
 gunicorn
