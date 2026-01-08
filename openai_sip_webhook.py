@@ -350,6 +350,28 @@ async def send_greeting(call_id: str) -> None:
         },
     }
 
+    async def _recv_event(websocket, label: str, timeout: float = 1.0) -> None:
+        try:
+            raw = await asyncio.wait_for(websocket.recv(), timeout=timeout)
+        except asyncio.TimeoutError:
+            print(f"[greeting] {label}: no event within {timeout:.1f}s (call_id={call_id})")
+            return
+        except Exception as exc:
+            print(f"[greeting] {label}: recv error {exc} (call_id={call_id})")
+            return
+
+        try:
+            if isinstance(raw, bytes):
+                raw = raw.decode("utf-8", errors="replace")
+            event = json.loads(raw) if isinstance(raw, str) else raw
+            event_type = event.get("type") if isinstance(event, dict) else None
+            print(f"[greeting] {label}: received {event_type or type(event)} (call_id={call_id})")
+            if isinstance(event, dict) and event.get("type") in ("error", "response.error"):
+                print(f"[greeting] {label}: error payload={event} (call_id={call_id})")
+        except Exception as exc:
+            preview = raw[:200] if isinstance(raw, str) else str(raw)[:200]
+            print(f"[greeting] {label}: parse error {exc} preview={preview!r} (call_id={call_id})")
+
     ws_url = f"wss://api.openai.com/v1/realtime?call_id={call_id}"
     print(f"[greeting] connecting websocket for call_id={call_id} voice={OPENAI_VOICE or 'default'}")
 
@@ -357,15 +379,19 @@ async def send_greeting(call_id: str) -> None:
     for attempt in range(1, 3):
         try:
             async with websockets.connect(ws_url, extra_headers=AUTH_HEADER) as websocket:
-                await asyncio.sleep(0.25 * attempt)
+                await _recv_event(websocket, "session", timeout=1.5)
+                await asyncio.sleep(0.35 * attempt)
                 await websocket.send(json.dumps(response_create, ensure_ascii=False))
                 print(f"[greeting] sent response.create (call_id={call_id}, attempt={attempt})")
+                await _recv_event(websocket, "response", timeout=1.5)
                 return
         except TypeError:
             async with websockets.connect(ws_url, additional_headers=AUTH_HEADER) as websocket:
-                await asyncio.sleep(0.25 * attempt)
+                await _recv_event(websocket, "session", timeout=1.5)
+                await asyncio.sleep(0.35 * attempt)
                 await websocket.send(json.dumps(response_create, ensure_ascii=False))
                 print(f"[greeting] sent response.create (call_id={call_id}, attempt={attempt})")
+                await _recv_event(websocket, "response", timeout=1.5)
                 return
         except Exception as exc:
             print(f"[greeting] websocket error (call_id={call_id}, attempt={attempt}): {exc}")
