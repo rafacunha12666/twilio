@@ -338,6 +338,8 @@ async def send_greeting(call_id: str) -> None:
         print(f"[greeting] no greeting text configured; skipping (call_id={call_id})")
         return
 
+    print(f"[greeting] built instructions: {greeting_instructions!r} (call_id={call_id})")
+
     response_create = {
         "type": "response.create",
         "response": {
@@ -350,10 +352,13 @@ async def send_greeting(call_id: str) -> None:
     print(f"[greeting] connecting websocket for call_id={call_id}")
     try:
         async with websockets.connect(ws_url, extra_headers=AUTH_HEADER) as websocket:
+            # Pequena espera para garantir que a sessão já está pronta para receber o greeting
+            await asyncio.sleep(0.2)
             await websocket.send(json.dumps(response_create, ensure_ascii=False))
             print(f"[greeting] sent response.create (call_id={call_id})")
     except TypeError:
         async with websockets.connect(ws_url, additional_headers=AUTH_HEADER) as websocket:
+            await asyncio.sleep(0.2)
             await websocket.send(json.dumps(response_create, ensure_ascii=False))
             print(f"[greeting] sent response.create (call_id={call_id})")
     except Exception as exc:
