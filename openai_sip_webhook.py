@@ -24,6 +24,7 @@ OPENAI_PROMPT_PATH = os.getenv(
     "OPENAI_PROMPT_PATH",
     str(Path(__file__).with_name("prompt-paty.txt")),
 )
+OPENAI_VOICE = os.getenv("OPENAI_REALTIME_VOICE") or os.getenv("VOZ")
 SIP_CALLER_ID = (
     os.getenv("TWILIO_SIP_CALLER_ID")
     or os.getenv("WHATSAPP_CALL_FROM")
@@ -345,24 +346,30 @@ async def send_greeting(call_id: str) -> None:
         "response": {
             "modalities": ["audio"],
             "instructions": greeting_instructions,
+            **({"voice": OPENAI_VOICE} if OPENAI_VOICE else {}),
         },
     }
 
     ws_url = f"wss://api.openai.com/v1/realtime?call_id={call_id}"
-    print(f"[greeting] connecting websocket for call_id={call_id}")
-    try:
-        async with websockets.connect(ws_url, extra_headers=AUTH_HEADER) as websocket:
-            # Pequena espera para garantir que a sessão já está pronta para receber o greeting
-            await asyncio.sleep(0.2)
-            await websocket.send(json.dumps(response_create, ensure_ascii=False))
-            print(f"[greeting] sent response.create (call_id={call_id})")
-    except TypeError:
-        async with websockets.connect(ws_url, additional_headers=AUTH_HEADER) as websocket:
-            await asyncio.sleep(0.2)
-            await websocket.send(json.dumps(response_create, ensure_ascii=False))
-            print(f"[greeting] sent response.create (call_id={call_id})")
-    except Exception as exc:
-        print(f"[greeting] websocket error (call_id={call_id}): {exc}")
+    print(f"[greeting] connecting websocket for call_id={call_id} voice={OPENAI_VOICE or 'default'}")
+
+    # Try a couple of times in case the session is not fully ready yet
+    for attempt in range(1, 3):
+        try:
+            async with websockets.connect(ws_url, extra_headers=AUTH_HEADER) as websocket:
+                await asyncio.sleep(0.25 * attempt)
+                await websocket.send(json.dumps(response_create, ensure_ascii=False))
+                print(f"[greeting] sent response.create (call_id={call_id}, attempt={attempt})")
+                return
+        except TypeError:
+            async with websockets.connect(ws_url, additional_headers=AUTH_HEADER) as websocket:
+                await asyncio.sleep(0.25 * attempt)
+                await websocket.send(json.dumps(response_create, ensure_ascii=False))
+                print(f"[greeting] sent response.create (call_id={call_id}, attempt={attempt})")
+                return
+        except Exception as exc:
+            print(f"[greeting] websocket error (call_id={call_id}, attempt={attempt}): {exc}")
+            await asyncio.sleep(0.3)
 
 
 def start_greeting_thread(call_id: str) -> None:
