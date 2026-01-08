@@ -429,7 +429,7 @@ async def send_greeting(call_id: str) -> None:
                     f"[greeting] sent response.create (call_id={call_id}, attempt={attempt})",
                     flush=True,
                 )
-                await _recv_event(websocket, "response", timeout=1.5)
+                await _recv_event(websocket, "response", timeout=0.5)
                 return
         except Exception as exc:
             print(
