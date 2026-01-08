@@ -89,6 +89,66 @@ def load_instructions() -> str:
     return OPENAI_INSTRUCTIONS
 
 
+def debug_signature_validation(raw_body: bytes, headers: dict, secrets: list, debug_mode: bool = True) -> None:
+    """Debug webhook signature validation by logging hash, preview, and manual verification."""
+    import hashlib
+    import hmac
+    
+    # Calculate SHA256 hash of body
+    body_hash = hashlib.sha256(raw_body).hexdigest()
+    print(f"\n=== WEBHOOK DEBUG ===")
+    print(f"Body SHA256: {body_hash}")
+    print(f"Body length: {len(raw_body)} bytes")
+    
+    # Log body preview (first 200 chars)
+    try:
+        body_preview = raw_body[:200].decode('utf-8', errors='replace')
+        print(f"Body preview: {body_preview}...")
+    except Exception as e:
+        print(f"Could not decode body preview: {e}")
+    
+    # Log all relevant headers
+    webhook_id = headers.get("webhook-id", "")
+    webhook_timestamp = headers.get("webhook-timestamp", "")
+    webhook_signature = headers.get("webhook-signature", "")
+    
+    print(f"Headers:")
+    print(f"  webhook-id: {webhook_id}")
+    print(f"  webhook-timestamp: {webhook_timestamp}")
+    print(f"  webhook-signature: {webhook_signature[:80]}..." if len(webhook_signature) > 80 else f"  webhook-signature: {webhook_signature}")
+    print(f"  User-Agent: {headers.get('User-Agent', 'N/A')}")
+    print(f"  Content-Type: {headers.get('Content-Type', 'N/A')}")
+    print(f"  Content-Encoding: {headers.get('Content-Encoding', 'N/A')}")
+    
+    # Manual signature verification for each secret
+    print(f"\nManual signature verification ({len(secrets)} secret(s)):")
+    for i, secret in enumerate(secrets, 1):
+        try:
+            # OpenAI webhook signature format: webhook-id.webhook-timestamp.body
+            signed_payload = f"{webhook_id}.{webhook_timestamp}.{raw_body.decode('utf-8')}"
+            expected_sig = hmac.new(
+                secret.encode('utf-8'),
+                signed_payload.encode('utf-8'),
+                hashlib.sha256
+            ).hexdigest()
+            expected_full = f"v1,{expected_sig}"
+            
+            # Mask secret for logging
+            masked_secret = secret[:10] + "..." + secret[-6:] if len(secret) > 16 else secret[:4] + "..."
+            
+            matches = hmac.compare_digest(expected_full, webhook_signature)
+            print(f"  Secret #{i} ({masked_secret}): {'✓ MATCH' if matches else '✗ NO MATCH'}")
+            
+            if debug_mode and not matches:
+                print(f"    Expected: {expected_full[:80]}...")
+                print(f"    Received: {webhook_signature[:80]}...")
+                
+        except Exception as e:
+            print(f"  Secret #{i}: Error during manual verification: {e}")
+    
+    print(f"=== END DEBUG ===\n")
+
+
 def unwrap_event(raw_body: bytes, headers: dict) -> dict:
     """
     Validate OpenAI webhook signature using the official helper.
@@ -125,12 +185,21 @@ def unwrap_event(raw_body: bytes, headers: dict) -> dict:
         print(f"openai webhook secrets loaded ({len(secrets)}): {masked}")
         _LOGGED_WEBHOOK_SECRET_HINTS = True
 
+    # Call debug function before validation attempts
+    debug_webhook = os.getenv("DEBUG_WEBHOOK", "false").lower() == "true"
+    if debug_webhook:
+        debug_signature_validation(raw_body, headers, secrets, debug_webhook)
+
     last_err: Exception | None = None
-    for secret in secrets:
+    for i, secret in enumerate(secrets, 1):
         try:
             client = OpenAI(api_key=OPENAI_API_KEY, webhook_secret=secret)
-            return client.webhooks.unwrap(raw_body, headers)
+            event = client.webhooks.unwrap(raw_body, headers)
+            print(f"✓ Signature validated successfully with secret #{i}")
+            return event
         except Exception as exc:  # keep trying others
+            masked = _mask_secret(secret)
+            print(f"✗ Secret #{i} ({masked}) validation failed: {exc}")
             last_err = exc
             continue
     # If none validated, re-raise last error for logging.
@@ -196,26 +265,52 @@ def start_greeting_thread(call_id: str) -> None:
 
 @app.post("/openai/webhook")
 def handle_webhook():
+    import hashlib
+    from datetime import datetime
+    
     raw_body = request.get_data()
+    request_id = request.headers.get('webhook-id', 'unknown')[:16]
+    
     try:
         event = unwrap_event(raw_body, request.headers)
     except Exception as exc:
-        print(f"signature validation failed: {exc}")
+        # Always log body hash for failure analysis
+        body_hash = hashlib.sha256(raw_body).hexdigest()
+        timestamp = datetime.now().isoformat()
+        
+        print(f"\n{'='*60}")
+        print(f"[{timestamp}] WEBHOOK VALIDATION FAILED (req: {request_id})")
+        print(f"Error: {exc}")
+        print(f"Body SHA256: {body_hash}")
+        print(f"Body length: {len(raw_body)} bytes")
+        
         try:
             sig = request.headers.get("webhook-signature", "")
             sig_preview = sig[:48] + ("…" if len(sig) > 48 else "")
             print(
-                "webhook headers:"
+                "Headers:"
                 f" id={request.headers.get('webhook-id')}"
                 f" ts={request.headers.get('webhook-timestamp')}"
                 f" sig={sig_preview}"
                 f" ua={request.headers.get('User-Agent')}"
                 f" encoding={request.headers.get('Content-Encoding')}"
                 f" content_type={request.headers.get('Content-Type')}"
-                f" body_len={len(raw_body)}"
             )
         except Exception:
             pass
+        
+        # Save body to temp file for offline analysis if debug enabled
+        debug_webhook = os.getenv("DEBUG_WEBHOOK", "false").lower() == "true"
+        if debug_webhook:
+            try:
+                debug_file = f"webhook_body_{request_id}_{int(time.time())}.json"
+                with open(debug_file, 'wb') as f:
+                    f.write(raw_body)
+                print(f"Body saved to: {debug_file}")
+            except Exception as save_err:
+                print(f"Could not save body: {save_err}")
+        
+        print(f"{'='*60}\n")
         traceback.print_exc()
         # Return 200 to avoid retries storm; log and inspect.
         return ("", 200)
