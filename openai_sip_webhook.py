@@ -331,20 +331,28 @@ async def send_greeting(call_id: str) -> None:
     try:
         import websockets
     except ImportError:
-        print(f"[greeting] websockets not installed; greeting skipped (call_id={call_id})")
+        print(
+            f"[greeting] websockets not installed; greeting skipped (call_id={call_id})",
+            flush=True,
+        )
         return
 
     greeting_instructions = build_greeting_instructions(OPENAI_GREETING)
     if not greeting_instructions:
-        print(f"[greeting] no greeting text configured; skipping (call_id={call_id})")
+        print(
+            f"[greeting] no greeting text configured; skipping (call_id={call_id})",
+            flush=True,
+        )
         return
 
-    print(f"[greeting] built instructions: {greeting_instructions!r} (call_id={call_id})")
+    print(
+        f"[greeting] built instructions: {greeting_instructions!r} (call_id={call_id})",
+        flush=True,
+    )
 
     response_create = {
         "type": "response.create",
         "response": {
-            "modalities": ["audio"],
             "instructions": greeting_instructions,
             **({"voice": OPENAI_VOICE} if OPENAI_VOICE else {}),
         },
@@ -354,26 +362,50 @@ async def send_greeting(call_id: str) -> None:
         try:
             raw = await asyncio.wait_for(websocket.recv(), timeout=timeout)
         except asyncio.TimeoutError:
-            print(f"[greeting] {label}: no event within {timeout:.1f}s (call_id={call_id})")
+            print(
+                f"[greeting] {label}: no event within {timeout:.1f}s (call_id={call_id})",
+                flush=True,
+            )
             return
         except Exception as exc:
-            print(f"[greeting] {label}: recv error {exc} (call_id={call_id})")
+            print(
+                f"[greeting] {label}: recv error {exc} (call_id={call_id})",
+                flush=True,
+            )
             return
 
         try:
             if isinstance(raw, bytes):
                 raw = raw.decode("utf-8", errors="replace")
+            if isinstance(raw, str):
+                preview = raw[:400]
+                print(
+                    f"[greeting] {label}: raw preview={preview!r} (call_id={call_id})",
+                    flush=True,
+                )
             event = json.loads(raw) if isinstance(raw, str) else raw
             event_type = event.get("type") if isinstance(event, dict) else None
-            print(f"[greeting] {label}: received {event_type or type(event)} (call_id={call_id})")
+            print(
+                f"[greeting] {label}: received {event_type or type(event)} (call_id={call_id})",
+                flush=True,
+            )
             if isinstance(event, dict) and event.get("type") in ("error", "response.error"):
-                print(f"[greeting] {label}: error payload={event} (call_id={call_id})")
+                print(
+                    f"[greeting] {label}: error payload={event} (call_id={call_id})",
+                    flush=True,
+                )
         except Exception as exc:
             preview = raw[:200] if isinstance(raw, str) else str(raw)[:200]
-            print(f"[greeting] {label}: parse error {exc} preview={preview!r} (call_id={call_id})")
+            print(
+                f"[greeting] {label}: parse error {exc} preview={preview!r} (call_id={call_id})",
+                flush=True,
+            )
 
     ws_url = f"wss://api.openai.com/v1/realtime?call_id={call_id}"
-    print(f"[greeting] connecting websocket for call_id={call_id} voice={OPENAI_VOICE or 'default'}")
+    print(
+        f"[greeting] connecting websocket for call_id={call_id} voice={OPENAI_VOICE or 'default'}",
+        flush=True,
+    )
 
     # Try a couple of times in case the session is not fully ready yet
     for attempt in range(1, 3):
@@ -382,7 +414,10 @@ async def send_greeting(call_id: str) -> None:
                 await _recv_event(websocket, "session", timeout=1.5)
                 await asyncio.sleep(0.35 * attempt)
                 await websocket.send(json.dumps(response_create, ensure_ascii=False))
-                print(f"[greeting] sent response.create (call_id={call_id}, attempt={attempt})")
+                print(
+                    f"[greeting] sent response.create (call_id={call_id}, attempt={attempt})",
+                    flush=True,
+                )
                 await _recv_event(websocket, "response", timeout=1.5)
                 return
         except TypeError:
@@ -390,16 +425,22 @@ async def send_greeting(call_id: str) -> None:
                 await _recv_event(websocket, "session", timeout=1.5)
                 await asyncio.sleep(0.35 * attempt)
                 await websocket.send(json.dumps(response_create, ensure_ascii=False))
-                print(f"[greeting] sent response.create (call_id={call_id}, attempt={attempt})")
+                print(
+                    f"[greeting] sent response.create (call_id={call_id}, attempt={attempt})",
+                    flush=True,
+                )
                 await _recv_event(websocket, "response", timeout=1.5)
                 return
         except Exception as exc:
-            print(f"[greeting] websocket error (call_id={call_id}, attempt={attempt}): {exc}")
+            print(
+                f"[greeting] websocket error (call_id={call_id}, attempt={attempt}): {exc}",
+                flush=True,
+            )
             await asyncio.sleep(0.3)
 
 
 def start_greeting_thread(call_id: str) -> None:
-    print(f"[greeting] starting greeting thread (call_id={call_id})")
+    print(f"[greeting] starting greeting thread (call_id={call_id})", flush=True)
     threading.Thread(
         target=lambda: asyncio.run(send_greeting(call_id)),
         daemon=True,
@@ -485,7 +526,10 @@ def handle_webhook():
             else:
                 print(f"accept ok {resp.status_code}")
                 if OPENAI_GREETING and should_send_greeting(call_id):
-                    print(f"[greeting] scheduling greeting after accept (call_id={call_id})")
+                    print(
+                        f"[greeting] scheduling greeting after accept (call_id={call_id})",
+                        flush=True,
+                    )
                     start_greeting_thread(call_id)
                 elif OPENAI_GREETING:
                     print(f"greeting already sent for call_id: {call_id}")
