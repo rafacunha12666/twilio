@@ -94,6 +94,7 @@ def debug_signature_validation(raw_body: bytes, headers: dict, secrets: list, de
     import hashlib
     import hmac
     import base64
+    import traceback
     
     # Calculate SHA256 hash of body
     body_hash = hashlib.sha256(raw_body).hexdigest()
@@ -123,32 +124,54 @@ def debug_signature_validation(raw_body: bytes, headers: dict, secrets: list, de
     
     # Manual signature verification for each secret
     print(f"\nManual signature verification ({len(secrets)} secret(s)):")
+    
+    # Prepare body variations to test against modification issues
+    variations = {
+        "RAW": raw_body,
+        "STRIPPED": raw_body.strip(),
+        "TO_LF": raw_body.replace(b'\r\n', b'\n'),
+        "TO_CRLF": raw_body.replace(b'\n', b'\r\n').replace(b'\r\r\n', b'\r\n'),
+        "UTF8_NORM": raw_body.decode('utf-8', 'replace').encode('utf-8')
+    }
+
     for i, secret in enumerate(secrets, 1):
         try:
-            # OpenAI webhook signature format: webhook-id.webhook-timestamp.body
-            signed_payload = f"{webhook_id}.{webhook_timestamp}.{raw_body.decode('utf-8')}"
-            # CRITICAL: OpenAI uses base64, not hexdigest!
-            expected_sig = base64.b64encode(
-                hmac.new(
-                    secret.encode('utf-8'),
-                    signed_payload.encode('utf-8'),
-                    hashlib.sha256
-                ).digest()
-            ).decode()
-            expected_full = f"v1,{expected_sig}"
-            
-            # Mask secret for logging
             masked_secret = secret[:10] + "..." + secret[-6:] if len(secret) > 16 else secret[:4] + "..."
+            match_found = False
             
-            matches = hmac.compare_digest(expected_full, webhook_signature)
-            print(f"  Secret #{i} ({masked_secret}): {'✓ MATCH' if matches else '✗ NO MATCH'}")
-            
-            if debug_mode and not matches:
-                print(f"    Expected: {expected_full[:80]}...")
-                print(f"    Received: {webhook_signature[:80]}...")
+            for var_name, body_var in variations.items():
+                # OpenAI webhook signature format: webhook-id.webhook-timestamp.body
+                signed_payload = f"{webhook_id}.{webhook_timestamp}.".encode('utf-8') + body_var
                 
+                # CRITICAL: OpenAI uses base64, not hexdigest!
+                expected_sig = base64.b64encode(
+                    hmac.new(
+                        secret.encode('utf-8'),
+                        signed_payload,
+                        hashlib.sha256
+                    ).digest()
+                ).decode()
+                expected_full = f"v1,{expected_sig}"
+                
+                matches = hmac.compare_digest(expected_full, webhook_signature)
+                
+                if matches:
+                    print(f"  Secret #{i} ({masked_secret}): ✓ MATCH with {var_name}")
+                    match_found = True
+                    break
+                elif var_name == "RAW":
+                    # Only log failure details for RAW to avoid noise
+                    print(f"  Secret #{i} ({masked_secret}): ✗ NO MATCH (Raw)")
+                    if debug_mode:
+                        print(f"    Expected: {expected_full[:80]}...")
+                        print(f"    Received: {webhook_signature[:80]}...")
+            
+            if not match_found and debug_mode:
+                 print(f"    (Tried variations: {', '.join(variations.keys())} - none matched)")
+
         except Exception as e:
             print(f"  Secret #{i}: Error during manual verification: {e}")
+            traceback.print_exc()
     
     print(f"=== END DEBUG ===\n")
 
