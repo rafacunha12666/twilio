@@ -30,7 +30,10 @@ SIP_CALLER_ID = (
     or os.getenv("PHONE")
 )
 
-OPENAI_GREETING = os.getenv("OPENAI_REALTIME_GREETING", "Diga extamente o seguinte: 'Olá , tudo bem? Eu sou a Paty, consultora da Lemos Leite Advocacia.Qual é o seu nome?'")
+OPENAI_GREETING = os.getenv(
+    "OPENAI_REALTIME_GREETING",
+    "Olá, tudo bem? Eu sou a Paty, consultora da Lemos Leite Advocacia. Qual é o seu nome?",
+)
 OPENAI_INSTRUCTIONS = os.getenv(
     "OPENAI_REALTIME_INSTRUCTIONS",
     "Voce eh um atendente juridico, somente fale em portugues brasil.",
@@ -44,6 +47,8 @@ if not OPENAI_WEBHOOK_SECRET:
 app = Flask(__name__)
 AUTH_HEADER = {"Authorization": f"Bearer {OPENAI_API_KEY}"}
 _LOGGED_WEBHOOK_SECRET_HINTS = False
+_GREETED_CALL_IDS: set[str] = set()
+_GREETED_CALL_IDS_LOCK = threading.Lock()
 
 
 def build_sip_uri() -> str:
@@ -87,6 +92,68 @@ def load_instructions() -> str:
         except Exception as exc:
             print(f"failed to load prompt file '{OPENAI_PROMPT_PATH}': {exc}")
     return OPENAI_INSTRUCTIONS
+
+
+def extract_greeting_text(raw_greeting: str) -> str:
+    """
+    Normalize OPENAI_REALTIME_GREETING.
+
+    It’s common to accidentally set the env var to a meta-instruction like:
+      "Diga exatamente o seguinte: 'Olá ...'"
+
+    For `response.instructions` we want the literal phrase to be spoken, not the meta-instruction.
+    """
+    greeting = (raw_greeting or "").strip()
+    if not greeting:
+        return ""
+
+    lower = greeting.lower().strip()
+    if lower.startswith(("diga", "say")):
+        import re
+
+        m = re.search(r"['\"](.*?)['\"]", greeting, flags=re.DOTALL)
+        if m and m.group(1).strip():
+            return m.group(1).strip()
+
+        if ":" in greeting:
+            candidate = greeting.split(":", 1)[1].strip().strip("'\"").strip()
+            if candidate:
+                return candidate
+
+        parts = greeting.split(None, 1)
+        if len(parts) == 2:
+            candidate = parts[1].strip().strip("'\"").strip()
+            if candidate:
+                return candidate
+
+    return greeting
+
+
+def build_greeting_instructions(greeting: str) -> str:
+    """
+    Build deterministic greeting instructions.
+
+    In Realtime, `response.instructions` is a prompt (not literal output). If we pass a raw greeting
+    like "Olá... Qual é o seu nome?", the model may treat it as user input and respond as if it
+    were the caller (e.g., "Olá, Paty, eu sou o João"), which looks like "cached" behavior.
+    """
+    greeting_text = extract_greeting_text(greeting)
+    if not greeting_text:
+        return ""
+
+    return (
+        "Você é a atendente virtual (Paty). Ao atender a chamada, fale APENAS a frase abaixo, "
+        "exatamente como está, sem adicionar nada antes ou depois e sem responder como se fosse o cliente:\n"
+        f"{greeting_text}"
+    )
+
+
+def should_send_greeting(call_id: str) -> bool:
+    with _GREETED_CALL_IDS_LOCK:
+        if call_id in _GREETED_CALL_IDS:
+            return False
+        _GREETED_CALL_IDS.add(call_id)
+        return True
 
 
 def debug_signature_validation(raw_body: bytes, headers: dict, secrets: list, debug_mode: bool = True) -> None:
@@ -266,20 +333,25 @@ async def send_greeting(call_id: str) -> None:
         print("websockets not installed; greeting skipped.")
         return
 
+    greeting_instructions = build_greeting_instructions(OPENAI_GREETING)
+    if not greeting_instructions:
+        return
+
     response_create = {
         "type": "response.create",
         "response": {
-            "instructions": OPENAI_GREETING,
+            "modalities": ["audio"],
+            "instructions": greeting_instructions,
         },
     }
 
     ws_url = f"wss://api.openai.com/v1/realtime?call_id={call_id}"
     try:
         async with websockets.connect(ws_url, extra_headers=AUTH_HEADER) as websocket:
-            await websocket.send(json.dumps(response_create))
+            await websocket.send(json.dumps(response_create, ensure_ascii=False))
     except TypeError:
         async with websockets.connect(ws_url, additional_headers=AUTH_HEADER) as websocket:
-            await websocket.send(json.dumps(response_create))
+            await websocket.send(json.dumps(response_create, ensure_ascii=False))
     except Exception as exc:
         print(f"websocket error: {exc}")
 
@@ -369,8 +441,10 @@ def handle_webhook():
                 print(f"accept failed {resp.status_code}: {resp.text}")
             else:
                 print(f"accept ok {resp.status_code}")
-                if OPENAI_GREETING:
+                if OPENAI_GREETING and should_send_greeting(call_id):
                     start_greeting_thread(call_id)
+                elif OPENAI_GREETING:
+                    print(f"greeting already sent for call_id: {call_id}")
 
         threading.Thread(target=_accept_worker, daemon=True).start()
     else:
