@@ -559,7 +559,10 @@ def twilio_voice():
         f"<Dial action=\"{action_url}\" method=\"POST\" "
         f"statusCallback=\"{status_url}\" "
         "statusCallbackEvent=\"initiated ringing answered completed\" "
-        "statusCallbackMethod=\"POST\""
+        "statusCallbackMethod=\"POST\" "
+        "record=\"record-from-answer-dual\" "
+        "recordingStatusCallback=\"https://n8n-production-fcb8b.up.railway.app/webhook/twilio_recording\" "
+        "recordingStatusCallbackEvent=\"completed\""
         + (f" callerId=\"{caller_id}\"" if caller_id else "")
         + ">"
         f"<Sip>{sip_uri}</Sip>"
