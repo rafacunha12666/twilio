@@ -231,9 +231,17 @@ def build_farewell_response_create(reason: str) -> dict:
     return {
         "type": "response.create",
         "response": {
-            "output_modalities": ["audio"],
-            "input": [],
             "instructions": instructions,
+            **({"voice": OPENAI_VOICE} if OPENAI_VOICE else {}),
+        },
+    }
+
+
+def build_greeting_response_create(greeting_instructions: str) -> dict:
+    return {
+        "type": "response.create",
+        "response": {
+            "instructions": greeting_instructions,
             **({"voice": OPENAI_VOICE} if OPENAI_VOICE else {}),
         },
     }
@@ -561,15 +569,7 @@ async def _send_initial_realtime_events(websocket, call_id: str) -> None:
     if OPENAI_GREETING and should_send_greeting(call_id):
         greeting_instructions = build_greeting_instructions(OPENAI_GREETING)
         if greeting_instructions:
-            response_create = {
-                "type": "response.create",
-                "response": {
-                    "output_modalities": ["audio"],
-                    "input": [],
-                    "instructions": greeting_instructions,
-                    **({"voice": OPENAI_VOICE} if OPENAI_VOICE else {}),
-                },
-            }
+            response_create = build_greeting_response_create(greeting_instructions)
             await websocket.send(json.dumps(response_create, ensure_ascii=False))
             print(f"[monitor] greeting requested (call_id={call_id})", flush=True)
 
@@ -882,7 +882,10 @@ def twilio_dial_status():
 def twilio_dial_action():
     payload = {k: v for k, v in request.form.items()}
     print(f"twilio dial action: {payload}")
-    return ("", 200)
+    return Response(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?><Response></Response>",
+        mimetype="text/xml",
+    )
 
 
 if __name__ == "__main__":

@@ -98,9 +98,26 @@ class CallLifecycleTests(unittest.TestCase):
 
         self.assertEqual(event["type"], "response.create")
         self.assertIn("response", event)
-        self.assertEqual(event["response"]["output_modalities"], ["audio"])
+        self.assertNotIn("output_modalities", event["response"])
+        self.assertNotIn("input", event["response"])
         self.assertIn("despedida", event["response"]["instructions"].lower())
         json.dumps(event)
+
+    def test_greeting_response_uses_official_sip_response_create_shape(self):
+        event = webhook.build_greeting_response_create("Diga oi")
+
+        self.assertEqual(event["type"], "response.create")
+        self.assertEqual(event["response"]["instructions"], "Diga oi")
+        self.assertNotIn("output_modalities", event["response"])
+        self.assertNotIn("input", event["response"])
+
+    def test_twilio_dial_action_returns_valid_empty_twiml(self):
+        with webhook.app.test_client() as client:
+            resp = client.post("/twilio/dial-action", data={"CallStatus": "completed"})
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.mimetype, "text/xml")
+        self.assertIn(b"<Response></Response>", resp.data)
 
 
 if __name__ == "__main__":
