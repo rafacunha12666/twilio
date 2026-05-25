@@ -39,6 +39,12 @@ OPENAI_INSTRUCTIONS = os.getenv(
     "OPENAI_REALTIME_INSTRUCTIONS",
     "Voce eh um atendente juridico, somente fale em portugues brasil.",
 )
+OPENAI_MAX_CALL_SECONDS = float(os.getenv("OPENAI_REALTIME_MAX_CALL_SECONDS", "600"))
+END_CALL_TOOL_NAME = "end_call"
+OPENAI_FAREWELL_INSTRUCTIONS = os.getenv(
+    "OPENAI_REALTIME_FAREWELL",
+    "Faca uma despedida curta em portugues e diga que vai encerrar a chamada agora.",
+)
 
 if not OPENAI_API_KEY:
     raise SystemExit("Missing OPENAI_API_KEY in environment.")
@@ -93,6 +99,16 @@ def load_instructions() -> str:
         except Exception as exc:
             print(f"failed to load prompt file '{OPENAI_PROMPT_PATH}': {exc}")
     return OPENAI_INSTRUCTIONS
+
+
+def build_call_instructions() -> str:
+    return (
+        f"{load_instructions().rstrip()}\n\n"
+        "=== ENCERRAMENTO DA CHAMADA ===\n"
+        "Quando o cliente se despedir, disser que nao precisa de mais nada, "
+        "agradecer como encerramento, ou pedir para desligar, chame a ferramenta "
+        "end_call. Nao desligue sem antes fazer uma despedida curta."
+    )
 
 
 def extract_greeting_text(raw_greeting: str) -> str:
@@ -155,6 +171,73 @@ def should_send_greeting(call_id: str) -> bool:
             return False
         _GREETED_CALL_IDS.add(call_id)
         return True
+
+
+def build_end_call_session_update() -> dict:
+    return {
+        "type": "session.update",
+        "session": {
+            "tools": [
+                {
+                    "type": "function",
+                    "name": END_CALL_TOOL_NAME,
+                    "description": (
+                        "Call this when the caller clearly wants to end the call, "
+                        "says goodbye, says there is nothing else needed, or asks to hang up."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "reason": {
+                                "type": "string",
+                                "description": "Brief reason why the call should end.",
+                            }
+                        },
+                        "required": [],
+                    },
+                }
+            ],
+            "tool_choice": "auto",
+        },
+    }
+
+
+def build_farewell_response_create(reason: str) -> dict:
+    instructions = (
+        f"{OPENAI_FAREWELL_INSTRUCTIONS}\n"
+        f"Motivo interno do encerramento: {reason}.\n"
+        "Fale apenas a despedida, sem explicar detalhes tecnicos."
+    )
+    return {
+        "type": "response.create",
+        "response": {
+            "instructions": instructions,
+            **({"voice": OPENAI_VOICE} if OPENAI_VOICE else {}),
+        },
+    }
+
+
+def is_end_call_tool_event(event: object) -> bool:
+    if not isinstance(event, dict):
+        return False
+
+    event_type = event.get("type")
+    if (
+        event_type == "response.function_call_arguments.done"
+        and event.get("name") == END_CALL_TOOL_NAME
+    ):
+        return True
+
+    if event_type != "response.done":
+        return False
+
+    response = event.get("response")
+    output = response.get("output", []) if isinstance(response, dict) else []
+    for item in output:
+        if isinstance(item, dict) and item.get("type") == "function_call":
+            if item.get("name") == END_CALL_TOOL_NAME:
+                return True
+    return False
 
 
 def debug_signature_validation(raw_body: bytes, headers: dict, secrets: list, debug_mode: bool = True) -> None:
@@ -310,7 +393,7 @@ def accept_call(call_id: str) -> requests.Response | None:
     body = {
         "type": "realtime",
         "model": OPENAI_MODEL,
-        "instructions": load_instructions(),
+        "instructions": build_call_instructions(),
     }
     for attempt in range(1, 4):
         try:
@@ -325,6 +408,137 @@ def accept_call(call_id: str) -> requests.Response | None:
             print(f"accept attempt {attempt} failed: {exc}")
             time.sleep(0.5 * attempt)
     return None
+
+
+def hangup_call(call_id: str) -> requests.Response | None:
+    """End an active OpenAI Realtime SIP call."""
+    url = f"https://api.openai.com/v1/realtime/calls/{call_id}/hangup"
+    for attempt in range(1, 4):
+        try:
+            resp = requests.post(
+                url,
+                headers=AUTH_HEADER,
+                timeout=(3.05, 20),
+            )
+            return resp
+        except requests.RequestException as exc:
+            print(f"hangup attempt {attempt} failed: {exc}")
+            time.sleep(0.5 * attempt)
+    return None
+
+
+def _parse_realtime_event(raw: object) -> dict | None:
+    try:
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8", errors="replace")
+        return json.loads(raw) if isinstance(raw, str) else raw
+    except Exception as exc:
+        preview = raw[:200] if isinstance(raw, str) else str(raw)[:200]
+        print(f"[monitor] event parse error {exc} preview={preview!r}", flush=True)
+        return None
+
+
+async def _wait_for_audio_drained(websocket, call_id: str, timeout: float = 8.0) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            raw = await asyncio.wait_for(websocket.recv(), timeout=0.75)
+        except asyncio.TimeoutError:
+            continue
+        except Exception as exc:
+            print(f"[monitor] audio-drain recv error (call_id={call_id}): {exc}", flush=True)
+            return
+
+        event = _parse_realtime_event(raw)
+        event_type = event.get("type") if isinstance(event, dict) else None
+        print(f"[monitor] drain event={event_type} (call_id={call_id})", flush=True)
+        if event_type == "output_audio_buffer.stopped":
+            return
+
+
+async def _send_farewell_and_hangup(websocket, call_id: str, reason: str) -> None:
+    await websocket.send(json.dumps(build_farewell_response_create(reason), ensure_ascii=False))
+    print(f"[monitor] farewell requested reason={reason} (call_id={call_id})", flush=True)
+    await _wait_for_audio_drained(websocket, call_id)
+    resp = hangup_call(call_id)
+    if resp is None:
+        print(f"[monitor] hangup failed after retries (call_id={call_id})", flush=True)
+    elif not resp.ok:
+        print(f"[monitor] hangup failed {resp.status_code}: {resp.text}", flush=True)
+    else:
+        print(f"[monitor] hangup ok {resp.status_code} (call_id={call_id})", flush=True)
+
+
+async def _send_initial_realtime_events(websocket, call_id: str) -> None:
+    await websocket.send(json.dumps(build_end_call_session_update(), ensure_ascii=False))
+    print(f"[monitor] end-call tool configured (call_id={call_id})", flush=True)
+
+    if OPENAI_GREETING and should_send_greeting(call_id):
+        greeting_instructions = build_greeting_instructions(OPENAI_GREETING)
+        if greeting_instructions:
+            response_create = {
+                "type": "response.create",
+                "response": {
+                    "instructions": greeting_instructions,
+                    **({"voice": OPENAI_VOICE} if OPENAI_VOICE else {}),
+                },
+            }
+            await websocket.send(json.dumps(response_create, ensure_ascii=False))
+            print(f"[monitor] greeting requested (call_id={call_id})", flush=True)
+
+
+async def _monitor_connected_websocket(websocket, call_id: str) -> None:
+    await _send_initial_realtime_events(websocket, call_id)
+    deadline = time.monotonic() + OPENAI_MAX_CALL_SECONDS
+
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            await _send_farewell_and_hangup(websocket, call_id, "max_call_seconds")
+            return
+
+        try:
+            raw = await asyncio.wait_for(websocket.recv(), timeout=min(1.0, remaining))
+        except asyncio.TimeoutError:
+            continue
+        except Exception as exc:
+            print(f"[monitor] websocket recv error (call_id={call_id}): {exc}", flush=True)
+            return
+
+        event = _parse_realtime_event(raw)
+        event_type = event.get("type") if isinstance(event, dict) else None
+        print(f"[monitor] event={event_type} (call_id={call_id})", flush=True)
+        if is_end_call_tool_event(event):
+            await _send_farewell_and_hangup(websocket, call_id, "agent_end_call")
+            return
+
+
+async def monitor_realtime_call(call_id: str) -> None:
+    try:
+        import websockets
+    except ImportError:
+        print(f"[monitor] websockets not installed; monitor skipped (call_id={call_id})")
+        return
+
+    ws_url = f"wss://api.openai.com/v1/realtime?call_id={call_id}"
+    print(f"[monitor] connecting websocket (call_id={call_id})", flush=True)
+    try:
+        try:
+            async with websockets.connect(ws_url, extra_headers=AUTH_HEADER) as websocket:
+                await _monitor_connected_websocket(websocket, call_id)
+        except TypeError:
+            async with websockets.connect(ws_url, additional_headers=AUTH_HEADER) as websocket:
+                await _monitor_connected_websocket(websocket, call_id)
+    except Exception as exc:
+        print(f"[monitor] websocket error (call_id={call_id}): {exc}", flush=True)
+
+
+def start_call_monitor_thread(call_id: str) -> None:
+    print(f"[monitor] starting monitor thread (call_id={call_id})", flush=True)
+    threading.Thread(
+        target=lambda: asyncio.run(monitor_realtime_call(call_id)),
+        daemon=True,
+    ).start()
 
 
 async def send_greeting(call_id: str) -> None:
@@ -525,14 +739,7 @@ def handle_webhook():
                 print(f"accept failed {resp.status_code}: {resp.text}")
             else:
                 print(f"accept ok {resp.status_code}")
-                if OPENAI_GREETING and should_send_greeting(call_id):
-                    print(
-                        f"[greeting] scheduling greeting after accept (call_id={call_id})",
-                        flush=True,
-                    )
-                    start_greeting_thread(call_id)
-                elif OPENAI_GREETING:
-                    print(f"greeting already sent for call_id: {call_id}")
+                start_call_monitor_thread(call_id)
 
         threading.Thread(target=_accept_worker, daemon=True).start()
     else:
