@@ -6,8 +6,8 @@ import openai_sip_webhook as webhook
 
 
 class CallLifecycleTests(unittest.TestCase):
-    def test_default_max_call_seconds_is_ten_minutes(self):
-        self.assertEqual(webhook.OPENAI_MAX_CALL_SECONDS, 600.0)
+    def test_default_max_call_seconds_is_five_minutes(self):
+        self.assertEqual(webhook.OPENAI_MAX_CALL_SECONDS, 300.0)
 
     def test_end_call_session_update_registers_tool(self):
         event = webhook.build_end_call_session_update()

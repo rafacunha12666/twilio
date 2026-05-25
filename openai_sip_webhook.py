@@ -39,7 +39,7 @@ OPENAI_INSTRUCTIONS = os.getenv(
     "OPENAI_REALTIME_INSTRUCTIONS",
     "Voce eh um atendente juridico, somente fale em portugues brasil.",
 )
-OPENAI_MAX_CALL_SECONDS = float(os.getenv("OPENAI_REALTIME_MAX_CALL_SECONDS", "600"))
+OPENAI_MAX_CALL_SECONDS = float(os.getenv("OPENAI_REALTIME_MAX_CALL_SECONDS", "300"))
 END_CALL_TOOL_NAME = "end_call"
 OPENAI_FAREWELL_INSTRUCTIONS = os.getenv(
     "OPENAI_REALTIME_FAREWELL",
