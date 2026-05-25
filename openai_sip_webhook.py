@@ -45,6 +45,24 @@ OPENAI_FAREWELL_INSTRUCTIONS = os.getenv(
     "OPENAI_REALTIME_FAREWELL",
     "Faca uma despedida curta em portugues e diga que vai encerrar a chamada agora.",
 )
+END_CALL_PHRASES = (
+    "era so isso",
+    "era só isso",
+    "so isso",
+    "só isso",
+    "pode desligar",
+    "pode encerrar",
+    "vou desligar",
+    "tchau",
+    "ate logo",
+    "até logo",
+    "nao preciso de mais nada",
+    "não preciso de mais nada",
+    "nao tenho mais nada",
+    "não tenho mais nada",
+    "encerrar a chamada",
+    "finalizar a chamada",
+)
 
 if not OPENAI_API_KEY:
     raise SystemExit("Missing OPENAI_API_KEY in environment.")
@@ -173,30 +191,32 @@ def should_send_greeting(call_id: str) -> bool:
         return True
 
 
+def build_end_call_tool() -> dict:
+    return {
+        "type": "function",
+        "name": END_CALL_TOOL_NAME,
+        "description": (
+            "Call this when the caller clearly wants to end the call, says goodbye, "
+            "says there is nothing else needed, or asks to hang up."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "reason": {
+                    "type": "string",
+                    "description": "Brief reason why the call should end.",
+                }
+            },
+            "required": [],
+        },
+    }
+
+
 def build_end_call_session_update() -> dict:
     return {
         "type": "session.update",
         "session": {
-            "tools": [
-                {
-                    "type": "function",
-                    "name": END_CALL_TOOL_NAME,
-                    "description": (
-                        "Call this when the caller clearly wants to end the call, "
-                        "says goodbye, says there is nothing else needed, or asks to hang up."
-                    ),
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "reason": {
-                                "type": "string",
-                                "description": "Brief reason why the call should end.",
-                            }
-                        },
-                        "required": [],
-                    },
-                }
-            ],
+            "tools": [build_end_call_tool()],
             "tool_choice": "auto",
         },
     }
@@ -211,6 +231,8 @@ def build_farewell_response_create(reason: str) -> dict:
     return {
         "type": "response.create",
         "response": {
+            "output_modalities": ["audio"],
+            "input": [],
             "instructions": instructions,
             **({"voice": OPENAI_VOICE} if OPENAI_VOICE else {}),
         },
@@ -238,6 +260,38 @@ def is_end_call_tool_event(event: object) -> bool:
             if item.get("name") == END_CALL_TOOL_NAME:
                 return True
     return False
+
+
+def _normalize_text(value: str) -> str:
+    return " ".join(value.lower().strip().split())
+
+
+def _collect_text_values(value: object) -> list[str]:
+    texts: list[str] = []
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if key in ("text", "transcript") and isinstance(child, str):
+                texts.append(child)
+            else:
+                texts.extend(_collect_text_values(child))
+    elif isinstance(value, list):
+        for child in value:
+            texts.extend(_collect_text_values(child))
+    return texts
+
+
+def is_user_end_call_event(event: object) -> bool:
+    if not isinstance(event, dict):
+        return False
+
+    item = event.get("item")
+    if not isinstance(item, dict) or item.get("role") != "user":
+        return False
+
+    text = _normalize_text(" ".join(_collect_text_values(item)))
+    if not text:
+        return False
+    return any(phrase in text for phrase in END_CALL_PHRASES)
 
 
 def debug_signature_validation(raw_body: bytes, headers: dict, secrets: list, debug_mode: bool = True) -> None:
@@ -394,6 +448,8 @@ def accept_call(call_id: str) -> requests.Response | None:
         "type": "realtime",
         "model": OPENAI_MODEL,
         "instructions": build_call_instructions(),
+        "tools": [build_end_call_tool()],
+        "tool_choice": "auto",
     }
     for attempt in range(1, 4):
         try:
@@ -438,6 +494,33 @@ def _parse_realtime_event(raw: object) -> dict | None:
         return None
 
 
+async def _wait_for_event_type(
+    websocket,
+    call_id: str,
+    wanted_types: tuple[str, ...],
+    timeout: float = 2.0,
+) -> dict | None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            raw = await asyncio.wait_for(websocket.recv(), timeout=0.5)
+        except asyncio.TimeoutError:
+            continue
+        except Exception as exc:
+            print(f"[monitor] wait recv error (call_id={call_id}): {exc}", flush=True)
+            return None
+
+        event = _parse_realtime_event(raw)
+        event_type = event.get("type") if isinstance(event, dict) else None
+        print(f"[monitor] wait event={event_type} (call_id={call_id})", flush=True)
+        if event_type == "error":
+            print(f"[monitor] error payload={event} (call_id={call_id})", flush=True)
+        if event_type in wanted_types:
+            return event
+    print(f"[monitor] wait timed out for {wanted_types} (call_id={call_id})", flush=True)
+    return None
+
+
 async def _wait_for_audio_drained(websocket, call_id: str, timeout: float = 8.0) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -470,8 +553,10 @@ async def _send_farewell_and_hangup(websocket, call_id: str, reason: str) -> Non
 
 
 async def _send_initial_realtime_events(websocket, call_id: str) -> None:
+    await _wait_for_event_type(websocket, call_id, ("session.created",), timeout=2.0)
     await websocket.send(json.dumps(build_end_call_session_update(), ensure_ascii=False))
-    print(f"[monitor] end-call tool configured (call_id={call_id})", flush=True)
+    print(f"[monitor] end-call tool update sent (call_id={call_id})", flush=True)
+    await _wait_for_event_type(websocket, call_id, ("session.updated",), timeout=2.0)
 
     if OPENAI_GREETING and should_send_greeting(call_id):
         greeting_instructions = build_greeting_instructions(OPENAI_GREETING)
@@ -479,6 +564,8 @@ async def _send_initial_realtime_events(websocket, call_id: str) -> None:
             response_create = {
                 "type": "response.create",
                 "response": {
+                    "output_modalities": ["audio"],
+                    "input": [],
                     "instructions": greeting_instructions,
                     **({"voice": OPENAI_VOICE} if OPENAI_VOICE else {}),
                 },
@@ -508,8 +595,13 @@ async def _monitor_connected_websocket(websocket, call_id: str) -> None:
         event = _parse_realtime_event(raw)
         event_type = event.get("type") if isinstance(event, dict) else None
         print(f"[monitor] event={event_type} (call_id={call_id})", flush=True)
+        if event_type == "error":
+            print(f"[monitor] error payload={event} (call_id={call_id})", flush=True)
         if is_end_call_tool_event(event):
             await _send_farewell_and_hangup(websocket, call_id, "agent_end_call")
+            return
+        if is_user_end_call_event(event):
+            await _send_farewell_and_hangup(websocket, call_id, "user_end_call")
             return
 
 
