@@ -13,6 +13,7 @@ class CallLifecycleTests(unittest.TestCase):
         event = webhook.build_end_call_session_update()
 
         self.assertEqual(event["type"], "session.update")
+        self.assertEqual(event["session"]["type"], "realtime")
         self.assertEqual(event["session"]["tool_choice"], "auto")
         tools = event["session"]["tools"]
         self.assertEqual(tools[0]["type"], "function")
@@ -100,6 +101,7 @@ class CallLifecycleTests(unittest.TestCase):
         self.assertIn("response", event)
         self.assertNotIn("output_modalities", event["response"])
         self.assertNotIn("input", event["response"])
+        self.assertNotIn("voice", event["response"])
         self.assertIn("despedida", event["response"]["instructions"].lower())
         json.dumps(event)
 
@@ -110,6 +112,7 @@ class CallLifecycleTests(unittest.TestCase):
         self.assertEqual(event["response"]["instructions"], "Diga oi")
         self.assertNotIn("output_modalities", event["response"])
         self.assertNotIn("input", event["response"])
+        self.assertNotIn("voice", event["response"])
 
     def test_twilio_dial_action_returns_valid_empty_twiml(self):
         with webhook.app.test_client() as client:

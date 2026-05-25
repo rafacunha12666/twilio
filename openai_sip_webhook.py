@@ -216,6 +216,7 @@ def build_end_call_session_update() -> dict:
     return {
         "type": "session.update",
         "session": {
+            "type": "realtime",
             "tools": [build_end_call_tool()],
             "tool_choice": "auto",
         },
@@ -232,7 +233,6 @@ def build_farewell_response_create(reason: str) -> dict:
         "type": "response.create",
         "response": {
             "instructions": instructions,
-            **({"voice": OPENAI_VOICE} if OPENAI_VOICE else {}),
         },
     }
 
@@ -242,7 +242,6 @@ def build_greeting_response_create(greeting_instructions: str) -> dict:
         "type": "response.create",
         "response": {
             "instructions": greeting_instructions,
-            **({"voice": OPENAI_VOICE} if OPENAI_VOICE else {}),
         },
     }
 
